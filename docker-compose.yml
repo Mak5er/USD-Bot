@@ -1,0 +1,9 @@
+services:
+  usd-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+    container_name: usd-bot
+    restart: always
