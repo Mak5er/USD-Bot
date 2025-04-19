@@ -6,14 +6,40 @@ from aiogram.filters import Command
 from supabase import create_client, Client
 from datetime import datetime, timedelta
 
-from parser import get_prices
+from parser import get_usd_prices, get_eur_prices
 from config import TOKEN, SUPABASE_URL, SUPABASE_KEY
-
+from init_db import create_supabase_tables
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+async def ensure_tables_exist():
+    """Перевіряє наявність необхідних таблиць і створює їх, якщо вони відсутні"""
+    try:
+        # Перевіряємо таблицю користувачів
+        try:
+            supabase.table("users").select("*").limit(1).execute()
+            print("Таблиця 'users' існує")
+        except Exception:
+            print("Таблиця 'users' не існує, створюємо...")
+            # Використовуємо функцію для створення таблиць
+            create_supabase_tables()
+            return
+
+        # Перевіряємо таблицю цін
+        try:
+            supabase.table("prices").select("*").limit(1).execute()
+            print("Таблиця 'prices' існує")
+        except Exception:
+            print("Таблиця 'prices' не існує, створюємо...")
+            # Використовуємо функцію для створення таблиць
+            create_supabase_tables()
+    except Exception as e:
+        print(f"Помилка при перевірці таблиць: {e}")
+        # Продовжимо роботу навіть при помилці, можливо таблиці вже існують
 
 
 @dp.message(Command("start"))
@@ -48,67 +74,100 @@ async def stop_command(message: types.Message):
 
 
 async def check_prices():
-    # Fetch the latest prices (your fetch_prices function needs to be defined elsewhere)
-    prices = get_prices()
+    # Отримуємо актуальні ціни USD
+    usd_prices = get_usd_prices()
 
-    # Get the current time in Kyiv time zone
+    # Отримуємо актуальні ціни EUR
+    eur_prices = get_eur_prices()
+
+    # Отримуємо поточний час у київському часовому поясі
     kyiv_tz = pytz.timezone("Europe/Kiev")
     current_time = datetime.now(kyiv_tz)
 
-    # Format the time to ISO 8601 format
+    # Форматуємо час до ISO 8601 формату
     formatted_time = current_time.strftime("%Y-%m-%dT%H:%M:%S")
 
-    # Fetch the last inserted prices from the database
-    response = supabase.table("prices").select("*").order("timestamp", desc=True).limit(1).execute()
-    previous_price = response.data[0] if response.data else None
+    # Отримуємо останні ціни USD з бази даних
+    response_usd = supabase.table("prices").select("*").eq("currency", "USD").order("timestamp", desc=True).limit(
+        1).execute()
+    previous_usd_price = response_usd.data[0] if response_usd.data else None
 
-    # If there are previous prices, check if there's any change in buy/sell prices
-    if previous_price:
-        previous_buy_price = previous_price["buy_price"]
-        previous_sell_price = previous_price["sell_price"]
+    # Отримуємо останні ціни EUR з бази даних
+    response_eur = supabase.table("prices").select("*").eq("currency", "EUR").order("timestamp", desc=True).limit(
+        1).execute()
+    previous_eur_price = response_eur.data[0] if response_eur.data else None
 
-        # Compare with the current prices and notify if there's a change
-        if prices["buy_price"] != previous_buy_price or prices["sell_price"] != previous_sell_price:
-            await notify_users(prices, previous_buy_price, previous_sell_price)
+    # Перевіряємо зміни для USD
+    if previous_usd_price:
+        previous_buy_price = previous_usd_price["buy_price"]
+        previous_sell_price = previous_usd_price["sell_price"]
+        previous_nbu_price = previous_usd_price.get("nbu_price")
 
-    # Insert the new prices with the timestamp into the database
-    supabase.table("prices").insert({**prices, "timestamp": formatted_time}).execute()
+        # Порівнюємо з поточними цінами та сповіщаємо, якщо є зміни
+        if usd_prices["buy_price"] != previous_buy_price or usd_prices["sell_price"] != previous_sell_price or \
+                usd_prices["nbu_price"] != previous_nbu_price:
+            await notify_users(usd_prices, previous_buy_price, previous_sell_price, previous_nbu_price, "USD")
 
-    # Calculate the last 24 hours in Kyiv time
-    last_24h = current_time - timedelta(hours=24)
-    response = supabase.table("prices").select("*").gte("timestamp", last_24h.isoformat()).execute()
-    historical_prices = response.data
+    # Перевіряємо зміни для EUR
+    if previous_eur_price:
+        previous_buy_price = previous_eur_price["buy_price"]
+        previous_sell_price = previous_eur_price["sell_price"]
+        previous_nbu_price = previous_eur_price.get("nbu_price")
 
-    # Find the max and min buy and sell prices in the last 24 hours
-    max_buy = max(p["buy_price"] for p in historical_prices)
-    min_buy = min(p["buy_price"] for p in historical_prices)
-    max_sell = max(p["sell_price"] for p in historical_prices)
-    min_sell = min(p["sell_price"] for p in historical_prices)
+        # Порівнюємо з поточними цінами та сповіщаємо, якщо є зміни
+        if eur_prices["buy_price"] != previous_buy_price or eur_prices["sell_price"] != previous_sell_price or \
+                eur_prices["nbu_price"] != previous_nbu_price:
+            await notify_users(eur_prices, previous_buy_price, previous_sell_price, previous_nbu_price, "EUR")
 
-    # Notify users if the current price is outside the historical range
-    if prices["buy_price"] > max_buy or prices["buy_price"] < min_buy or \
-            prices["sell_price"] > max_sell or prices["sell_price"] < min_sell:
-        await notify_users(prices)
+    # Додаємо нові ціни USD до бази даних
+    supabase.table("prices").insert({**usd_prices, "timestamp": formatted_time, "currency": "USD"}).execute()
+
+    # Додаємо нові ціни EUR до бази даних
+    supabase.table("prices").insert({**eur_prices, "timestamp": formatted_time, "currency": "EUR"}).execute()
 
 
-async def notify_users(prices, previous_buy_price, previous_sell_price):
-    # Get all users from the database
+async def notify_users(prices, previous_buy_price, previous_sell_price, previous_nbu_price=None, currency="USD"):
+    # Отримуємо всіх користувачів з бази даних
     response = supabase.table("users").select("user_id").execute()
     user_ids = [user["user_id"] for user in response.data]
 
+    # Обираємо емодзі в залежності від валюти
+    currency_emoji = "💵" if currency == "USD" else "💶"
+
     for user_id in user_ids:
-        # Notify users if the buy or sell price has changed
-        message = f"<b>Нові ціни:</b>\nКупівля: <b>{prices['buy_price']}</b> грн\nПродаж: <b>{prices['sell_price']}</b> грн\n"
+        message = (
+            f"{currency_emoji} <b>Оновлення курсу {currency}</b> {currency_emoji}\n\n"
+            f"🔹 <b>Купівля:</b> {prices['buy_price']} грн\n"
+            f"🔹 <b>Продаж:</b> {prices['sell_price']} грн\n"
+            f"🏦 <b>Курс НБУ:</b> {prices['nbu_price']} грн\n"
+        )
 
-        if prices["buy_price"] != previous_buy_price:
-            change_buy = prices["buy_price"] - previous_buy_price
-            message += f"\nЗміна ціни купівлі: <b>{previous_buy_price}</b> → <b>{prices['buy_price']}</b> грн " \
-                       f"({change_buy:+.2f})"
+        # Зміни
+        changes = []
 
-        if prices["sell_price"] != previous_sell_price:
-            change_sell = prices["sell_price"] - previous_sell_price
-            message += f"\nЗміна ціни продажу: <b>{previous_sell_price}</b> → <b>{prices['sell_price']}</b> грн " \
-                       f"({change_sell:+.2f})"
+        if previous_buy_price and prices["buy_price"] != previous_buy_price:
+            change = prices["buy_price"] - previous_buy_price
+            arrow = "🔼" if change > 0 else "🔽"
+            changes.append(
+                f"{arrow} <b>Зміна купівлі:</b> {previous_buy_price} → {prices['buy_price']} грн ({change:+.2f})"
+            )
+
+        if previous_sell_price and prices["sell_price"] != previous_sell_price:
+            change = prices["sell_price"] - previous_sell_price
+            arrow = "🔼" if change > 0 else "🔽"
+            changes.append(
+                f"{arrow} <b>Зміна продажу:</b> {previous_sell_price} → {prices['sell_price']} грн ({change:+.2f})"
+            )
+
+        if previous_nbu_price and prices["nbu_price"] != previous_nbu_price:
+            change = prices["nbu_price"] - previous_nbu_price
+            arrow = "🔼" if change > 0 else "🔽"
+            changes.append(
+                f"{arrow} <b>Зміна НБУ:</b> {previous_nbu_price} → {prices['nbu_price']} грн ({change:+.2f})"
+            )
+
+        if changes:
+            message += "\n" + "\n".join(changes)
 
         await bot.send_message(user_id, message, parse_mode='HTML')
 
@@ -120,7 +179,13 @@ async def scheduler():
 
 
 async def main():
+    # Переконуємося, що необхідні таблиці існують
+    await ensure_tables_exist()
+
+    # Запускаємо планувальник
     asyncio.create_task(scheduler())
+
+    # Запускаємо бота
     await dp.start_polling(bot)
 
 

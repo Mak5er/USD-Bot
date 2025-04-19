@@ -10,7 +10,7 @@ def fetch_page_content(url):
         ua = UserAgent()
         headers = {
             'User-Agent': ua.random,
-            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Language': 'uk-UA,uk;q=0.9',
             'Referer': 'https://www.google.com/',
         }
         response = requests.get(url, headers=headers)
@@ -52,26 +52,46 @@ def parse_online_list(tab_section):
     return online_list
 
 
-def parse_first_item(online_list):
-    """Отримує текст першого елемента 'module-exchange__item' зі списку."""
-    first_item = online_list.find('li', class_='module-exchange__item')
-    if not first_item:
-        raise ValueError("Елемент з класом 'module-exchange__item' не знайдений.")
-    return first_item.get_text(strip=True)
+def parse_first_item(online_list, index=0):
+    """Отримує текст вказаного елемента 'module-exchange__item' зі списку.
+    За замовчуванням повертає перший елемент (USD), якщо index=1, повертає другий елемент (EUR)."""
+    items = online_list.find_all('li', class_='module-exchange__item')
+    if not items or len(items) <= index:
+        raise ValueError(f"Елемент з класом 'module-exchange__item' з індексом {index} не знайдений.")
+    return items[index].get_text(strip=True)
 
 
 def extract_prices(data):
-    """Витягує значення після 'Купівля online' та 'Продаж online'."""
-    buy_online_match = re.search(r"Купівля online([\d.]+)", data)
-    sell_online_match = re.search(r"Продаж online([\d.]+)", data)
+    """Витягує значення після 'Купівля online', 'Продаж online' та 'НБУ'."""
+    # Перевіряємо, чи це євро
+    if data.startswith("EUR"):
+        # Євро формат: наприклад "EURЄвро46.6546.4547.3947.4547.00"
+        # Витягуємо всі числа з даних
+        all_numbers = re.findall(r"\d{2}\.\d{2}", data)
 
-    buy_online = buy_online_match.group(1) if buy_online_match else "Невідомо"
-    sell_online = sell_online_match.group(1) if sell_online_match else "Невідомо"
+        if len(all_numbers) >= 5:
+            # Перше, третє і п'яте число згідно з вимогами
+            buy_online = all_numbers[0]  # Перше число (46.65)
+            sell_online = all_numbers[2]  # Третє число (47.39)
+            nbu = all_numbers[4]  # П'яте число (47.00) - курс НБУ
+        else:
+            buy_online = "Невідомо"
+            sell_online = "Невідомо"
+            nbu = "Невідомо"
+    else:
+        # Стандартний формат для долара
+        buy_online_match = re.search(r"Купівля online([\d.]+)", data)
+        sell_online_match = re.search(r"Продаж online([\d.]+)", data)
+        nbu_match = re.search(r"НБУ([\d.]+)", data)
 
-    return buy_online, sell_online
+        buy_online = buy_online_match.group(1) if buy_online_match else "Невідомо"
+        sell_online = sell_online_match.group(1) if sell_online_match else "Невідомо"
+        nbu = nbu_match.group(1) if nbu_match else "Невідомо"
+
+    return buy_online, sell_online, nbu
 
 
-def get_prices():
+def get_prices(currency_index=0):
     url = "https://ukrsibbank.com/currency-cash/"
     try:
         # Завантажуємо HTML-контент
@@ -92,14 +112,25 @@ def get_prices():
         # Крок 4: Знаходимо список 'module-exchange__list--online'
         online_list = parse_online_list(tab_section)
 
-        # Крок 5: Отримуємо текст першого елемента 'module-exchange__item'
-        first_item_data = parse_first_item(online_list)
+        # Крок 5: Отримуємо текст елемента 'module-exchange__item' за індексом
+        item_data = parse_first_item(online_list, currency_index)
 
-        # Крок 6: Витягуємо значення після 'Купівля online' і 'Продаж online'
-        buy_online, sell_online = extract_prices(first_item_data)
+        # Крок 6: Витягуємо значення після 'Купівля online', 'Продаж online' та 'НБУ'
+        buy_online, sell_online, nbu = extract_prices(item_data)
 
         # Виводимо результат
-        return {"buy_price": float(buy_online), "sell_price": float(sell_online)}
+        return {"buy_price": float(buy_online), "sell_price": float(sell_online), "nbu_price": float(nbu)}
 
     except (RuntimeError, ValueError) as e:
+        print(f"Помилка при отриманні курсів валют: {e}")
         return e
+
+
+def get_usd_prices():
+    """Функція, що повертає курси для USD (індекс 0)"""
+    return get_prices(currency_index=0)
+
+
+def get_eur_prices():
+    """Функція, що повертає курси для EUR (індекс 1)"""
+    return get_prices(currency_index=1)
